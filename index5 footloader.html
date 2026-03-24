@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Foot Analysis - Final Lighting Sync</title>
+    <style>
+        :root {
+            --primary: #00f2ff;
+            --bg: #0a0a0c;
+            --panel-bg: rgba(25, 25, 30, 0.9);
+            --border: rgba(255, 255, 255, 0.1);
+        }
+
+        body { margin: 0; overflow: hidden; font-family: 'Inter', sans-serif; background: var(--bg); color: white; }
+
+        #ui-layer { 
+            position: absolute; top: 20px; left: 20px; z-index: 100; 
+            display: flex; flex-direction: column; gap: 15px; width: 280px;
+            pointer-events: none;
+        }
+
+        .panel { 
+            background: var(--panel-bg); backdrop-filter: blur(15px);
+            padding: 20px; border-radius: 16px; border: 1px solid var(--border); 
+            box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+            pointer-events: auto;
+        }
+
+        h2 { margin: 0 0 12px 0; font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: var(--primary); }
+
+        .group { display: flex; gap: 8px; margin-bottom: 15px; }
+        
+        button { 
+            flex: 1; background: rgba(255, 255, 255, 0.05); color: white; border: 1px solid var(--border); 
+            padding: 12px; border-radius: 8px; cursor: pointer; font-size: 11px; font-weight: 600; transition: 0.2s;
+        }
+        
+        button:hover { background: rgba(255, 255, 255, 0.15); }
+        button.active { background: var(--primary); color: #000; border-color: var(--primary); }
+
+        .upload-container {
+            position: relative; border: 2px dashed var(--border);
+            border-radius: 12px; padding: 20px; text-align: center; overflow: hidden;
+        }
+
+        #fileInput { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+
+        #data-log {
+            margin-top: 15px; max-height: 250px; overflow-y: auto; 
+            background: rgba(0,0,0,0.3); border-radius: 10px; padding: 10px;
+            font-family: monospace; font-size: 10px;
+        }
+        .log-entry { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .val { color: var(--primary); }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="panel">
+            <h2>Active Foot</h2>
+            <div class="group">
+                <button id="leftBtn" class="active">LEFT FOOT</button>
+                <button id="rightBtn">RIGHT FOOT</button>
+            </div>
+
+            <h2>Import Data</h2>
+            <div class="upload-container">
+                <div id="file-label" style="font-size: 11px; opacity: 0.7;">Drop .txt file here</div>
+                <input type="file" id="fileInput" accept=".txt">
+            </div>
+
+            <div id="data-log">
+                <div style="text-align:center; opacity:0.5; padding:20px;">No markers loaded</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="container"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        const urls = {
+            left: 'https://stuart-mcneill.github.io/3Dfootselection/Leftfoot.glb',
+            right: 'https://stuart-mcneill.github.io/feet-selection/RightFoot.glb'
+        };
+
+        let scene, camera, renderer, controls, camLight;
+        let currentFoot = 'left';
+        const footGroup = new THREE.Group();
+        const markerGroup = new THREE.Group();
+        const loader = new GLTFLoader();
+
+        init();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0a0a0c);
+
+            camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 1.2, 2.5);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            // Matches modern color rendering
+            renderer.outputColorSpace = THREE.SRGBColorSpace;
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            // SYNCED LIGHTING
+            scene.add(new THREE.HemisphereLight(0xffffff, 0x222222, 3.5));
+            
+            const sun = new THREE.DirectionalLight(0xffffff, 2.5);
+            sun.position.set(5, 10, 5);
+            scene.add(sun);
+
+            // Add a light that follows the camera to prevent "dull" back-sides
+            camLight = new THREE.PointLight(0xffffff, 1.5);
+            scene.add(camLight);
+
+            scene.add(footGroup);
+            scene.add(markerGroup);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.target.set(0, 0.4, 0);
+
+            loadFoot();
+
+            document.getElementById('leftBtn').onclick = () => { currentFoot = 'left'; loadFoot(); };
+            document.getElementById('rightBtn').onclick = () => { currentFoot = 'right'; loadFoot(); };
+            document.getElementById('fileInput').onchange = handleUpload;
+            
+            window.addEventListener('resize', onResize);
+            animate();
+        }
+
+        function loadFoot() {
+            footGroup.clear();
+            markerGroup.clear();
+
+            loader.load(urls[currentFoot], (gltf) => {
+                const model = gltf.scene;
+                
+                // MATERIAL OVERRIDE: Forces both feet to look exactly the same
+                model.traverse(child => {
+                    if (child.isMesh) {
+                        child.material = new THREE.MeshStandardMaterial({
+                            color: 0xcccccc,
+                            roughness: 0.4,
+                            metalness: 0.1
+                        });
+                    }
+                });
+
+                // V4 Normalization Math
+                const box = new THREE.Box3().setFromObject(model);
+                const size = new THREE.Vector3();
+                box.getSize(size);
+                const center = new THREE.Vector3();
+                box.getCenter(center);
+
+                model.position.x = -center.x;
+                model.position.y = -box.min.y; 
+                model.position.z = -center.z;
+
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scaleFactor = 1.0 / maxDim;
+                model.scale.setScalar(scaleFactor);
+                model.position.multiplyScalar(scaleFactor);
+
+                footGroup.add(model);
+                
+                document.getElementById('leftBtn').classList.toggle('active', currentFoot === 'left');
+                document.getElementById('rightBtn').classList.toggle('active', currentFoot === 'right');
+            });
+        }
+
+        function handleUpload(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const text = event.target.result;
+                if (text.toUpperCase().includes("SIDE: LEFT") && currentFoot !== 'left') {
+                    currentFoot = 'left'; loadFoot();
+                } else if (text.toUpperCase().includes("SIDE: RIGHT") && currentFoot !== 'right') {
+                    currentFoot = 'right'; loadFoot();
+                }
+                setTimeout(() => plotMarkers(text), 150);
+            };
+            reader.readAsText(file);
+        }
+
+        function plotMarkers(text) {
+            markerGroup.clear();
+            const log = document.getElementById('data-log');
+            log.innerHTML = '';
+            
+            const regex = /(-?\d+\.\d+),\s*(-?\d+\.\d+),\s*(-?\d+\.\d+)/g;
+            let match;
+            let count = 0;
+
+            while ((match = regex.exec(text)) !== null) {
+                const x = parseFloat(match[1]);
+                const y = parseFloat(match[2]);
+                const z = parseFloat(match[3]);
+
+                const sphere = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.008, 16, 16),
+                    new THREE.MeshBasicMaterial({ color: 0xff0000 })
+                );
+                
+                sphere.position.set(x, y, z);
+                markerGroup.add(sphere);
+
+                const div = document.createElement('div');
+                div.className = 'log-entry';
+                div.innerHTML = `<span>#${count+1}</span><span class="val">${x}, ${y}, ${z}</span>`;
+                log.appendChild(div);
+                count++;
+            }
+            document.getElementById('file-label').innerText = `${count} Markers Active`;
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if(camLight) camLight.position.copy(camera.position); // PointLight follows camera
+            controls.update();
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
